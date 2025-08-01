@@ -1,38 +1,68 @@
 import streamlit as st
-import requests
 import random
+import sqlite3
+import os
 from chatbot import get_bot_response
-from utils.auth import register_user
 
-BACKEND_URL = "http://127.0.0.1:5000"
-st.set_page_config(page_title="Aptitude App", layout="centered")
+# ------------- PATH CONFIG -------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+USER_DB_PATH = os.path.join(BASE_DIR, "database", "user.db")
+QUIZ_DB_PATH = os.path.join(BASE_DIR, "database", "quiz.db")
 
-# ------------------- Session State Init -------------------
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.username = ""
-if 'questions' not in st.session_state:
-    st.session_state.questions = []
-if 'current_q' not in st.session_state:
-    st.session_state.current_q = 0
-if 'score' not in st.session_state:
-    st.session_state.score = 0
-if 'quiz_active' not in st.session_state:
-    st.session_state.quiz_active = False
-if 'submitted_answers' not in st.session_state:
-    st.session_state.submitted_answers = {}
-if 'answer_feedback' not in st.session_state:
-    st.session_state.answer_feedback = {}
+# ------------- SESSION INIT -------------
+for key, value in {
+    'logged_in': False,
+    'username': "",
+    'questions': [],
+    'current_q': 0,
+    'score': 0,
+    'quiz_active': False,
+    'submitted_answers': {},
+    'answer_feedback': {}
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
-# ------------------- Login/Register Page -------------------
+# ------------- AUTH FUNCTIONS -------------
+def validate_user(username, password):
+    conn = sqlite3.connect(USER_DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE username = ? AND password = ?", (username, password))
+    user = cursor.fetchone()
+    conn.close()
+    return user is not None
+
+def register_user(username, password):
+    conn = sqlite3.connect(USER_DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+# ------------- QUIZ FUNCTION -------------
+def get_questions_by_category(category):
+    conn = sqlite3.connect(QUIZ_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    table_name = f"{category}_quiz"
+    cursor.execute(f"SELECT * FROM {table_name} ORDER BY RANDOM() LIMIT 20")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+# ------------- LOGIN PAGE -------------
 def login_page():
     st.title("🔐 Login / Register")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
-    
+
     if st.button("Login"):
-        res = requests.post(f"{BACKEND_URL}/login", json={"username": username, "password": password})
-        if res.ok and res.json().get("success"):
+        if validate_user(username, password):
             st.session_state.logged_in = True
             st.session_state.username = username
             st.success("✅ Login successful!")
@@ -41,47 +71,18 @@ def login_page():
 
     if st.button("Register"):
         if register_user(username, password):
-            st.success("✅ User registered. Now you can login.")
+            st.success("✅ Registered. Now login.")
         else:
             st.warning("⚠️ Username already taken.")
 
-# ------------------- Load Questions -------------------
-def load_questions(category):
-    res = requests.post(f"{BACKEND_URL}/questions", json={"category": category})
-    if res.ok:
-        questions = res.json().get('questions', [])
-        random.shuffle(questions)
-        st.session_state.questions = questions[:20]
-        st.session_state.current_q = 0
-        st.session_state.score = 0
-        st.session_state.quiz_active = True
-        st.session_state.submitted_answers = {}
-        st.session_state.answer_feedback = {}
-    else:
-        st.error("Failed to load questions.")
-
-# ------------------- Quiz Page -------------------
+# ------------- QUIZ PAGE -------------
 def quiz_page():
     st.title("📝 Take a Quiz")
 
-    if 'quiz_active' not in st.session_state:
-        st.session_state.quiz_active = False
-    if 'questions' not in st.session_state:
-        st.session_state.questions = []
-    if 'current_q' not in st.session_state:
-        st.session_state.current_q = 0
-    if 'submitted_answers' not in st.session_state:
-        st.session_state.submitted_answers = {}
-    if 'answer_feedback' not in st.session_state:
-        st.session_state.answer_feedback = {}
-    if 'score' not in st.session_state:
-        st.session_state.score = 0
-
     def load_questions(category):
-        from utils.question_utils import get_questions_by_category
         questions = get_questions_by_category(category)
         random.shuffle(questions)
-        st.session_state.questions = questions[:20]  # Limit to 20 questions
+        st.session_state.questions = questions[:20]
         st.session_state.quiz_active = True
         st.session_state.current_q = 0
         st.session_state.submitted_answers = {}
@@ -105,11 +106,9 @@ def quiz_page():
         radio_key = f"question_{q_index}_option"
         if submitted:
             selected_option = st.radio(
-                "Options",
-                options,
+                "Options", options,
                 index=options.index(st.session_state.submitted_answers[q_index]) if st.session_state.submitted_answers[q_index] in options else 0,
-                key=radio_key,
-                disabled=True
+                key=radio_key, disabled=True
             )
         else:
             selected_option = st.radio("Options", options, index=None, key=radio_key)
@@ -118,9 +117,8 @@ def quiz_page():
             if selected_option:
                 user_ans = selected_option.strip().lower()
                 st.session_state.submitted_answers[q_index] = selected_option
-
-                correct_label = q['answer'].strip().upper()  # "A", "B", etc.
-                correct_index = ord(correct_label) - ord('A')  # 0, 1, 2, 3
+                correct_label = q['answer'].strip().upper()
+                correct_index = ord(correct_label) - ord('A')
                 correct_option = options[correct_index].strip().lower()
 
                 if user_ans == correct_option:
@@ -133,7 +131,6 @@ def quiz_page():
         if q_index in st.session_state.answer_feedback:
             st.info(st.session_state.answer_feedback[q_index])
 
-        # ----------- NAVIGATION BUTTONS -----------
         col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
             if st.button("⬅️ Previous") and q_index > 0:
@@ -155,19 +152,13 @@ def quiz_page():
                 st.session_state.score = total_correct
                 st.session_state.quiz_active = False
 
-    # -------- SHOW SCORE --------
     if not st.session_state.quiz_active and st.session_state.questions:
         st.success(f"🎉 Quiz Finished! Your Score: {st.session_state.score}/{len(st.session_state.questions)}")
         if st.button("Restart"):
-            st.session_state.quiz_active = False
-            st.session_state.questions = []
-            st.session_state.current_q = 0
-            st.session_state.submitted_answers = {}
-            st.session_state.answer_feedback = {}
-            st.session_state.score = 0
+            for key in ['quiz_active', 'questions', 'current_q', 'submitted_answers', 'answer_feedback', 'score']:
+                st.session_state[key] = 0 if isinstance(st.session_state[key], int) else []
 
-
-# ------------------- Chatbot Page -------------------
+# ------------- CHATBOT -------------
 def chatbot_page():
     st.title("💬 Chatbot Assistant")
     user_query = st.text_input("Ask something...")
@@ -175,7 +166,7 @@ def chatbot_page():
         response = get_bot_response(user_query)
         st.write(f"🤖 {response}")
 
-# ------------------- App Navigation -------------------
+# ------------- APP ROUTER -------------
 if not st.session_state.logged_in:
     login_page()
 else:
