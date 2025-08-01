@@ -4,7 +4,8 @@ import random
 from chatbot import get_bot_response
 from utils.auth import register_user
 
-BACKEND_URL = "http://127.0.0.1:5000"
+BACKEND_URL = "BACKEND_URL = "https://aptitude-app.onrender.com"
+"
 st.set_page_config(page_title="Aptitude App", layout="centered")
 
 # ------------------- Session State Init -------------------
